@@ -1,6 +1,9 @@
 package com.guido.guzman.msv.oauth.services;
 
 import com.guido.guzman.msv.oauth.entities.User;
+import io.micrometer.tracing.Tracer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -18,19 +21,23 @@ import java.util.stream.Collectors;
 
 @Service
 public class UserService implements UserDetailsService {
-    private WebClient.Builder client;
+    private WebClient client;
+    private final Logger logger = LoggerFactory.getLogger(UserService.class);
+    private Tracer tracer;
 
-    public UserService(WebClient.Builder client) {
+    public UserService(WebClient client, Tracer tracer) {
         this.client = client;
+        this.tracer = tracer;
     }
 
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        logger.info("Calling login process UserService::loadUserByUsername with username: {}", username);
         Map<String, String> params = new HashMap<>();
         params.put("username", username);
 
         try {
-            User user = client.build().get().uri("/username/{username}", params)
+            User user = client.get().uri("/username/{username}", params)
                     .accept(MediaType.APPLICATION_JSON)
                     .retrieve()
                     .bodyToMono(User.class)
@@ -40,6 +47,8 @@ public class UserService implements UserDetailsService {
                     .stream()
                     .map(role -> new SimpleGrantedAuthority(role.getName()))
                     .collect(Collectors.toList());
+            logger.info("Login successful by username: {}", username);
+            tracer.currentSpan().tag("success.login", String.format("Login successful by username: '%s'", username));
             return new org.springframework.security.core.userdetails.User(
                     user.getUsername(),
                     user.getPassword(),
@@ -50,7 +59,14 @@ public class UserService implements UserDetailsService {
                     roles
             );
         } catch (WebClientResponseException e) {
-            throw new UsernameNotFoundException(String.format("Error en el login, no existe el user '%s' en el sistema", username));
+            String error = getErrorMessage(username);
+            logger.error(error);
+            tracer.currentSpan().tag("error.login.message", error + " - " + e.getMessage());
+            throw new UsernameNotFoundException(getErrorMessage(username));
         }
+    }
+
+    private String getErrorMessage(String username) {
+        return String.format("Error en el login, no existe el user '%s' en el sistema", username);
     }
 }
